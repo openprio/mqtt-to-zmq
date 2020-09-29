@@ -3,72 +3,75 @@ package main
 import (
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"time"
 
 	"github.com/dustin/go-broadcast"
+	"github.com/zeromq/goczmq"
 	"github.com/eclipse/paho.mqtt.golang"
-	"github.com/gorilla/websocket"
+	"C"
 )
 
 var b broadcast.Broadcaster
 var f mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
-	//	fmt.Printf("TOPIC: %s\n", msg.Topic())
-	//	fmt.Printf("MSG: %s\n", msg.Payload())
 	b.Submit(msg.Payload())
 }
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
+func connectionLostHandler(client mqtt.Client, reason error) {
+	log.Println("Connection lost:", reason.Error())
+        time.Sleep(10 * time.Second)
+        os.Exit(1)
 }
 
 func main() {
 	b = broadcast.NewBroadcaster(100)
-        url := os.Getenv("MQTT_URL")
-        deviceId := os.Getenv("MQTT_DEVICE_ID")
-        password := os.Getenv("MQTT_PASSWORD")
+	url := os.Getenv("MQTT_URL")
+	deviceId := os.Getenv("MQTT_DEVICE_ID")
+	password := os.Getenv("MQTT_PASSWORD")
 
-        log.Println(url)
-        opts := mqtt.NewClientOptions().AddBroker(url).SetClientID(deviceId)
-	//opts := mqtt.NewClientOptions().AddBroker("ssl://mqtt.openprio.nl:8883").SetClientID("mqtt-to-websocket")
+	log.Println(url)
+	opts := mqtt.NewClientOptions().AddBroker(url).SetClientID(deviceId)
 	opts.SetKeepAlive(60 * time.Second)
 	opts.SetDefaultPublishHandler(f)
-	opts.SetPingTimeout(1 * time.Second)
+	opts.SetPingTimeout(2 * time.Second)
 	opts.SetUsername(deviceId)
-	//opts.SetPassword("!*zcqXCsD/fn:24)")
-        opts.SetPassword(password)
+	opts.SetPassword(password)
+	opts.SetConnectionLostHandler(connectionLostHandler)
 
 	c := mqtt.NewClient(opts)
 	if token := c.Connect(); token.Wait() && token.Error() != nil {
 		panic(token.Error())
 	}
 
-	if token := c.Subscribe("#", 0, nil); token.Wait() && token.Error() != nil {
+	if token := c.Subscribe("/prod/pt/position/#", 0, nil); token.Wait() && token.Error() != nil {
 		fmt.Println(token.Error())
 		os.Exit(1)
 	}
 
-	http.HandleFunc("/positions", func(w http.ResponseWriter, r *http.Request) {
-		upgrader.CheckOrigin = func(r *http.Request) bool { return true }
-		conn, err := upgrader.Upgrade(w, r, nil) // error ignored for sake of simplicity
-		if err != nil {
-			log.Print(err)
-		}
-		ch := make(chan interface{})
-		b.Register(ch)
-                defer b.Unregister(ch)
-                defer log.Println("Broker is done")
+	startZmq(b)
+}
 
-		for {
-			data := <-ch
-			log.Println("test")
-			// Write message back to browser
-			if err := conn.WriteMessage(2, data.([]byte)); err != nil {
-				return
-			}
+func startZmq(b broadcast.Broadcaster) {
+	ch := make(chan interface{})
+	b.Register(ch)
+	defer b.Unregister(ch)
+
+	zmqServer := os.Getenv("ZMQ_IP")
+	dealer := goczmq.NewDealerChanneler(zmqServer)
+	defer dealer.Destroy()
+
+	log.Println("dealer created and connected")
+	log.Println("Start sending data to ZeroMQ")
+	lastLogTime := time.Now()
+	counter := 0
+	for {
+		data := <-ch
+		dealer.SendChan <- [][]byte{[]byte("/openprio"), data.([]byte)}
+		counter = counter + 1
+		if time.Now().Sub(lastLogTime) > time.Minute * 1 {
+			lastLogTime = time.Now()
+			log.Printf("Sent %d messages since previous log", counter)
+			counter = 0
 		}
-	})
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	}
 }
