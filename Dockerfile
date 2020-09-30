@@ -1,13 +1,13 @@
 # stage 1: build the binary
 # we are using alpine Linux with the latest version of golang
-FROM golang:1.13-alpine as golang
+FROM golang:1.15-alpine as golang
 
 # first install some dependencies
 # (we are using the static versions for each for them as we want these libraries included statically, not dynamically!)
 # czmq requires libzmq which in turn requires libsodium
 # on alpine Linux we also need to install some specific tools to build C and C++ programs
 # libsodium also requires libuuid, which is included in util-linux-dev
-RUN apk add --no-cache libzmq-static czmq-dev libsodium-static build-base util-linux-dev git
+RUN apk add --no-cache libzmq-static czmq-static czmq-dev libsodium-static build-base util-linux-dev git
 
 # now we do the magic command mentioned here
 # https://stackoverflow.com/questions/34729748/installed-go-binary-not-found-in-path-on-alpine-linux-docker?noredirect=1&lq=1
